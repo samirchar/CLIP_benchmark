@@ -737,7 +737,7 @@ def build_wds_dataset(dataset_name, transform, split="test", data_dir="root", ca
 
     def read_txt(fname):
         if "://" in fname:
-            stream = os.popen("curl -L -s --fail '%s'" % fname, "r")
+            stream = os.popen("curl -L -s --fail --retry 3 --retry-delay 10 '%s'" % fname, "r")
             value = stream.read()
             if stream.close():
                 raise FileNotFoundError("Failed to retreive data")

@@ -141,7 +141,7 @@ def find_peak(wd_list, idxs, train_loader, val_loader, input_shape, output_shape
 
 def evaluate(model, train_dataloader, dataloader, fewshot_k, batch_size, num_workers, lr, epochs, 
              model_id, seed, feature_root, device, val_dataloader=None, normalize=True, amp=True, verbose=False):
-    assert device == 'cuda' # need to use cuda for this else too slow
+    assert torch.cuda.is_available() # need to use cuda for this else too slow
     # first we need to featurize the dataset, and store the result in feature_root
     if not os.path.exists(feature_root):
         os.mkdir(feature_root)
