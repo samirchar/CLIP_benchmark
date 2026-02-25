@@ -59,9 +59,7 @@ class FeatureDataset(Dataset):
 def train(dataloader, input_shape, output_shape, weight_decay, lr, epochs, amp, device, seed):
     torch.manual_seed(seed)
     model = torch.nn.Linear(input_shape, output_shape)
-    devices = [x for x in range(torch.cuda.device_count())]
-    model = model.cuda()
-    model = torch.nn.DataParallel(model, device_ids=devices)
+    model = model.to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
@@ -149,11 +147,8 @@ def evaluate(model, train_dataloader, dataloader, fewshot_k, batch_size, num_wor
     if not os.path.exists(feature_dir):
         os.mkdir(feature_dir)
     
-    featurizer = Featurizer(model, normalize).cuda()
+    featurizer = Featurizer(model, normalize).to(device)
     if not os.path.exists(os.path.join(feature_dir, 'targets_train.pt')):
-        # now we have to cache the features
-        devices = [x for x in range(torch.cuda.device_count())]
-        featurizer = torch.nn.DataParallel(featurizer, device_ids=devices)
 
         splits = ["_train", "_val", "_test"]
         for save_str, loader in zip(splits, [train_dataloader, val_dataloader, dataloader]):
