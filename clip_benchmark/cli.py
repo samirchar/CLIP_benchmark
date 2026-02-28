@@ -64,6 +64,7 @@ def get_parser_args():
     parser_eval.add_argument('--save_clf', default=None, type=str, help="optionally save the classification layer output by the text tower")
     parser_eval.add_argument('--load_clfs', nargs='+', default=[], type=str, help="optionally load and average mutliple layers output by text towers.")
     parser_eval.add_argument('--skip_existing', default=False, action="store_true", help="whether to skip an evaluation if the output file exists.")
+    parser_eval.add_argument('--dynamic_load_balancing', default=False, action="store_true", help="Use file-based dynamic task claiming instead of static round-robin partitioning. Improves load balance when tasks have variable runtimes (e.g., linear_probe). Requires --distributed.")
     parser_eval.add_argument('--model_type', default="open_clip", type=str, choices=MODEL_TYPES, help="clip model type")
     parser_eval.add_argument('--wds_cache_dir', default=None, type=str, help="optional cache directory for webdataset only")
     parser_eval.set_defaults(which='eval')
@@ -174,10 +175,16 @@ def main_eval(base):
     if base.distributed:
         local_rank, rank, world_size = world_info_from_env()
         runs = list(runs)
-        # randomize runs so that runs are balanced across gpus
-        random.seed(base.seed)
-        random.shuffle(runs)
-        runs = [r for i, r in enumerate(runs) if i % world_size == rank]
+        if base.dynamic_load_balancing:
+            # Dynamic load balancing: each rank iterates all runs with a unique
+            # shuffle order, claiming tasks via atomic lock files.
+            random.seed(base.seed + rank)
+            random.shuffle(runs)
+        else:
+            # Static round-robin partitioning (original behavior)
+            random.seed(base.seed)
+            random.shuffle(runs)
+            runs = [r for i, r in enumerate(runs) if i % world_size == rank]
     for (model, pretrained), (dataset), (language) in runs:
         # We iterative over all possible model/dataset/languages
         args = copy(base)
@@ -188,12 +195,28 @@ def main_eval(base):
         args.train_split = dataset_info[dataset]["train_split"]
         args.val_split = dataset_info[dataset]["val_split"]
         args.val_proportion = dataset_info[dataset]["proportion"]
-        run(args)
+        try:
+            run(args)
+        finally:
+            # Always remove the lock file after the eval finishes.
+            # On success the output JSON is the durable record;
+            # on failure removing the lock allows a retry.
+            if getattr(args, '_lock_path', None) and os.path.exists(args._lock_path):
+                os.remove(args._lock_path)
 
 def _as_list(l):
     if not l:
         return []
     return [l] if type(l) != list else l
+
+def _try_claim(lock_path):
+    """Atomically create a lock file. Returns True if this process claimed it, False if another rank already did."""
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
 
 def _single_option_to_multiple_datasets(cur_option, datasets, name):
     cur_len = len(cur_option)
@@ -243,6 +266,17 @@ def run(args):
         if args.verbose:
             print(f"Skip {output}, exists already.")
         return
+    # Dynamic load balancing: try to claim this task via an atomic lock file.
+    # If another rank already claimed it, skip.
+    # Stash lock_path on args so the caller can clean up on failure.
+    args._lock_path = None
+    if args.distributed and args.dynamic_load_balancing:
+        lock_path = output + ".lock"
+        if not _try_claim(lock_path):
+            if args.verbose:
+                print(f"Skip {output}, claimed by another rank.")
+            return
+        args._lock_path = lock_path
     if args.verbose:
         print(f"Running '{task}' on '{dataset_name}' with the model '{args.pretrained}' on language '{args.language}'")
     dataset_root = args.dataset_root.format(dataset=dataset_name, dataset_cleaned=dataset_name.replace("/", "-"))
