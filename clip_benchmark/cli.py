@@ -201,8 +201,11 @@ def main_eval(base):
             # Always remove the lock file after the eval finishes.
             # On success the output JSON is the durable record;
             # on failure removing the lock allows a retry.
-            if getattr(args, '_lock_path', None) and os.path.exists(args._lock_path):
-                os.remove(args._lock_path)
+            if getattr(args, '_lock_path', None):
+                try:
+                    os.remove(args._lock_path)
+                except FileNotFoundError:
+                    pass
 
 def _as_list(l):
     if not l:
